@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>LOCO//LAB - G1 Locomotion Policy Bench</title>
+<meta name="description" content="Real MuJoCo physics + a real ONNX locomotion policy, running entirely in your browser. Perturb a Unitree G1 and watch the policy recover.">
+<style>
+  :root {
+    --bg: #05070a;
+    --panel: rgba(10, 13, 18, 0.88);
+    --line: #1c2431;
+    --line-bright: #2c3648;
+    --text: #c9d2e0;
+    --dim: #5c6879;
+    --amber: #ffb000;
+    --red: #ff4545;
+    --green: #38d97a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    -webkit-font-smoothing: antialiased;
+  }
+  #view { position: fixed; inset: 0; touch-action: none; }
+  #view canvas { display: block; }
+
+  .panel {
+    position: fixed;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    backdrop-filter: blur(6px);
+    z-index: 5;
+  }
+  .corner::before, .corner::after {
+    content: ""; position: absolute; width: 7px; height: 7px; pointer-events: none;
+  }
+  .corner::before { top: -1px; left: -1px; border-top: 1px solid var(--amber); border-left: 1px solid var(--amber); }
+  .corner::after { bottom: -1px; right: -1px; border-bottom: 1px solid var(--amber); border-right: 1px solid var(--amber); }
+
+  /* header */
+  #hdr { top: 14px; left: 14px; padding: 10px 14px 9px; max-width: 420px; }
+  #hdr h1 {
+    font-size: 15px; font-weight: 700; letter-spacing: 0.14em; color: #eef2f8;
+  }
+  #hdr h1 .slash { color: var(--amber); }
+  #hdr .sub {
+    margin-top: 4px; font-size: 10px; letter-spacing: 0.08em; color: var(--dim); line-height: 1.5;
+  }
+  #hdr .sub b { color: var(--text); font-weight: 400; }
+
+  /* status pill */
+  #statusbar { top: 14px; right: 14px; padding: 8px 12px; display: flex; align-items: center; gap: 10px; }
+  .pill {
+    font-size: 11px; letter-spacing: 0.12em; padding: 3px 10px; border: 1px solid var(--line-bright);
+  }
+  .pill.ok { color: var(--green); border-color: var(--green); }
+  .pill.warn { color: var(--amber); border-color: var(--amber); }
+  .pill.bad { color: var(--red); border-color: var(--red); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0.45; } }
+  #shove-flash {
+    font-size: 11px; color: var(--red); opacity: 0; min-width: 40px; text-align: right;
+  }
+  #shove-flash.show { animation: flash 0.9s ease-out; }
+  @keyframes flash { 0% { opacity: 1; transform: translateY(2px); } 100% { opacity: 0; transform: translateY(-8px); } }
+
+  /* telemetry */
+  #telemetry { top: 84px; right: 14px; width: 216px; padding: 10px 12px; }
+  #telemetry h2, #ctrl h2 {
+    font-size: 9px; letter-spacing: 0.22em; color: var(--dim); font-weight: 400; margin-bottom: 8px;
+  }
+  .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 3px 0; border-top: 1px solid var(--line);
+  }
+  .row:first-of-type { border-top: none; }
+  .row .k { color: var(--dim); font-size: 10px; letter-spacing: 0.08em; }
+  .row .val { color: var(--text); font-size: 11px; }
+  .row .val.warn { color: var(--amber); }
+  .row .val.bad { color: var(--red); }
+  #t-velxbar-wrap { height: 3px; background: var(--line); margin-top: 6px; }
+  #t-velxbar { height: 100%; background: var(--amber); width: 0%; transition: width 0.2s; }
+
+  /* control bar */
+  #ctrl {
+    left: 50%; transform: translateX(-50%); bottom: 14px;
+    display: flex; align-items: stretch; gap: 0; padding: 0;
+    max-width: calc(100vw - 28px);
+  }
+  .cell {
+    padding: 9px 14px; border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; justify-content: center; gap: 5px;
+    min-width: 0;
+  }
+  .cell:last-child { border-right: none; }
+  .cell .lbl { font-size: 9px; letter-spacing: 0.18em; color: var(--dim); white-space: nowrap; }
+  .cell .v { font-size: 11px; color: var(--text); white-space: nowrap; }
+  button {
+    font: inherit; color: var(--text); background: transparent;
+    border: 1px solid var(--line-bright); padding: 5px 12px; cursor: pointer;
+    letter-spacing: 0.1em; font-size: 10px; white-space: nowrap;
+  }
+  button:hover { border-color: var(--amber); color: var(--amber); }
+  button.active { border-color: var(--amber); color: var(--amber); background: rgba(255, 176, 0, 0.08); }
+  button.danger:hover { border-color: var(--red); color: var(--red); }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; width: 110px; height: 2px;
+    background: var(--line-bright); outline: none; cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 10px; height: 14px;
+    background: var(--amber); border: none; cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 10px; height: 14px; background: var(--amber); border: none; cursor: pointer;
+  }
+  .seg { display: flex; gap: 4px; }
+  .chk { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--dim); letter-spacing: 0.1em; cursor: pointer; }
+  .chk input { accent-color: var(--amber); }
+
+  /* hint */
+  #hint {
+    position: fixed; bottom: 14px; left: 14px; z-index: 5;
+    font-size: 10px; color: var(--dim); letter-spacing: 0.06em; line-height: 1.7;
+    pointer-events: none;
+  }
+  #hint b { color: var(--text); font-weight: 400; }
+
+  /* boot overlay */
+  #boot {
+    position: fixed; inset: 0; background: var(--bg); z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.5s;
+  }
+  #boot.hidden { opacity: 0; pointer-events: none; }
+  #boot .inner { width: min(560px, 86vw); }
+  #boot h1 { font-size: 22px; letter-spacing: 0.18em; color: #eef2f8; }
+  #boot h1 .slash { color: var(--amber); }
+  #boot .tag { margin-top: 6px; font-size: 10px; letter-spacing: 0.2em; color: var(--dim); }
+  #bootlog {
+    margin-top: 22px; border: 1px solid var(--line); padding: 12px 14px;
+    height: 150px; overflow-y: auto; font-size: 11px; line-height: 1.8; color: var(--text);
+  }
+  #bootlog div:last-child { color: var(--amber); }
+
+  @media (max-width: 900px) {
+    #telemetry { display: none; }
+    #hdr { max-width: 62vw; }
+    #ctrl { overflow-x: auto; justify-content: flex-start; }
+    #hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="view"></div>
+
+<div id="hdr" class="panel corner">
+  <h1>LOCO<span class="slash">//</span>LAB</h1>
+  <div class="sub">
+    <b>UNITREE G1</b> &middot; 29-DOF VELOCITY POLICY &middot; MUJOCO 3.3 WASM &middot; ONNXRUNTIME<br>
+    REAL PHYSICS, REAL NEURAL NET - NO SERVER. EVERYTHING RUNS ON THIS PAGE.
+  </div>
+</div>
+
+<div id="statusbar" class="panel corner">
+  <span id="shove-flash"></span>
+  <span id="status" class="pill warn">BOOTING</span>
+</div>
+
+<div id="telemetry" class="panel corner">
+  <h2>TELEMETRY</h2>
+  <div class="row"><span class="k">POSTURE</span><span class="val" id="t-fallstat">-</span></div>
+  <div class="row"><span class="k">BASE Z</span><span class="val" id="t-basez">-</span></div>
+  <div class="row"><span class="k">VEL X CMD/ACT</span><span class="val" id="t-velx">-</span></div>
+  <div id="t-velxbar-wrap"><div id="t-velxbar"></div></div>
+  <div class="row" style="margin-top:6px"><span class="k">YAW RATE CMD</span><span class="val" id="t-yaw">-</span></div>
+  <div class="row"><span class="k">POLICY INFER</span><span class="val" id="t-infer">-</span></div>
+  <div class="row"><span class="k">REALTIME</span><span class="val" id="t-rt">-</span></div>
+  <div class="row"><span class="k">SIM CLOCK</span><span class="val" id="t-simt">-</span></div>
+</div>
+
+<div id="ctrl" class="panel corner">
+  <div class="cell">
+    <span class="lbl">SIM</span>
+    <div class="seg">
+      <button id="btn-play">PAUSE</button>
+      <button id="btn-reset">RESET</button>
+    </div>
+  </div>
+  <div class="cell">
+    <span class="lbl">PERTURB</span>
+    <button id="btn-shove" class="danger">SHOVE</button>
+  </div>
+  <div class="cell">
+    <span class="lbl">SPEED CMD</span>
+    <input type="range" id="spd" min="0" max="1.0" step="0.05" value="0.5">
+    <span class="v" id="spd-val">0.50 m/s</span>
+  </div>
+  <div class="cell">
+    <span class="lbl">TURN CMD</span>
+    <input type="range" id="yaw" min="-1" max="1" step="0.1" value="0">
+    <span class="v" id="yaw-val">0.00 rad/s</span>
+  </div>
+  <div class="cell">
+    <span class="lbl">TERRAIN</span>
+    <div class="seg">
+      <button id="ter-flat" class="active">FLAT</button>
+      <button id="ter-uphill">UP 3&deg;</button>
+      <button id="ter-downhill">DOWN 6&deg;</button>
+    </div>
+  </div>
+  <div class="cell">
+    <span class="lbl">CAMERA</span>
+    <label class="chk"><input type="checkbox" id="follow" checked> FOLLOW</label>
+  </div>
+</div>
+
+<div id="hint">
+  <b>drag the robot</b> to pull it off balance &middot; <b>SHOVE</b> for a 150-250N hit<br>
+  drag empty space to orbit &middot; scroll to zoom
+</div>
+
+<div id="boot">
+  <div class="inner">
+    <h1>LOCO<span class="slash">//</span>LAB</h1>
+    <div class="tag">BIPEDAL POLICY TEST BENCH &middot; CLIENT-SIDE ROBOTICS</div>
+    <div id="bootlog"></div>
+  </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
